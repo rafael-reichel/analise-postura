@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Detector de Exercícios com MediaPipe</title>
+    <style>
+      /* Estilo básico da página */
+      body {
+        margin: 0;
+        background: #000;
+        color: white;
+        font-family: sans-serif;
+      }
+
+      /* Estilo do menu de seleção de exercício */
+      #controls {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        z-index: 10;
+      }
+
+      select {
+        font-size: 16px;
+        padding: 4px;
+      }
+
+      /* Estilo dos elementos de vídeo e canvas */
+      video,
+      canvas {
+        position: absolute;
+        top: 50px;
+        left: 0;
+        width: 480px;
+        height: 620px;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Menu dropdown para selecionar o exercício -->
+    <div id="controls">
+      <label for="exerciseSelect">Escolha o exercício:</label>
+      <select id="exerciseSelect">
+        <option value="">-- Selecionar --</option>
+        <option value="corrida">Corrida</option>
+        <option value="agachamento">Agachamento</option>
+        <option value="flexao">Flexão de braço</option>
+        <option value="abdominal">Abdominal</option>
+      </select>
+    </div>
+
+    <!-- Elemento de vídeo escondido, será exibido ao carregar -->
+    <video id="video1" autoplay muted loop playsinline style="display: none">
+      <source id="videoSource" src="" type="video/mp4" />
+      Seu navegador não suporta vídeo.
+    </video>
+
+    <!-- Canvas sobreposto ao vídeo onde desenhamos a pose e os textos -->
+    <canvas id="output_canvas"></canvas>
+
+    <!-- Importação das bibliotecas MediaPipe -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+
+    <script>
+      // Referências aos elementos HTML
+      const video = document.getElementById("video1");
+      const videoSource = document.getElementById("videoSource");
+      const canvas = document.getElementById("output_canvas");
+      const ctx = canvas.getContext("2d");
+      const select = document.getElementById("exerciseSelect");
+
+      // Variáveis de estado
+      let tipoExercicio = "";
+      let lastRightKneeY = null;
+      let lastLeftKneeY = null;
+      let isRunning = false;
+
+      // Limite de variação vertical (corrida)
+      const STEP_THRESHOLD = 0.02;
+
+      // Inicialização do modelo MediaPipe Pose
+      const pose = new Pose({
+        locateFile: (file) =>
+          `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
+      });
+
+      // Configurações do modelo
+      pose.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        enableSegmentation: false,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+
+      // Função para calcular o ângulo entre três pontos
+      // Retorna o angulo em graus
+      function getAngle(A, B, C) {
+        const AB = { x: B.x - A.x, y: B.y - A.y };
+        const CB = { x: B.x - C.x, y: B.y - C.y };
+        const dot = AB.x * CB.x + AB.y * CB.y;
+        const magAB = Math.hypot(AB.x, AB.y);
+        const magCB = Math.hypot(CB.x, CB.y);
+        const angle = Math.acos(dot / (magAB * magCB));
+        return angle * (180 / Math.PI);
+      }
+
+      // Função executada a cada novo frame processado
+      pose.onResults((results) => {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        ctx.save();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+
+        if (results.poseLandmarks) {
+          const lm = results.poseLandmarks;
+
+          // Desenha os conectores e pontos da pose
+          drawConnectors(ctx, lm, POSE_CONNECTIONS, {
+            color: "#00FF00",
+            lineWidth: 4,
+          });
+          drawLandmarks(ctx, lm, { color: "#FF0000", lineWidth: 1 });
+
+          let texto = "";
+
+          // Estilo dos textos explicativos
+          ctx.font = "bold 24px Arial";
+          ctx.fillStyle = "white";
+          ctx.strokeStyle = "black";
+          ctx.lineWidth = 5;
+
+          // ======== LÓGICA: CORRIDA ========
+          if (tipoExercicio === "corrida") {
+            const rightKneeY = lm[26].y;
+            const leftKneeY = lm[25].y;
+
+            let rightDelta = 0;
+            let leftDelta = 0;
+
+            if (lastRightKneeY !== null && lastLeftKneeY !== null) {
+              rightDelta = lastRightKneeY - rightKneeY;
+              leftDelta = lastLeftKneeY - leftKneeY;
+            }
+
+            lastRightKneeY = rightKneeY;
+            lastLeftKneeY = leftKneeY;
+
+            if (
+              Math.abs(rightDelta) > STEP_THRESHOLD ||
+              Math.abs(leftDelta) > STEP_THRESHOLD
+            ) {
+              isRunning = true;
+            }
+
+            if (isRunning) {
+              texto = "Correndo";
+              // Mostra a variação do joelho (Δ)
+              ctx.strokeText(`Δ Joelho Dir: ${rightDelta.toFixed(3)}`, 30, 110);
+              ctx.fillText(`Δ Joelho Dir: ${rightDelta.toFixed(3)}`, 30, 110);
+              ctx.strokeText(`Δ Joelho Esq: ${leftDelta.toFixed(3)}`, 30, 145);
+              ctx.fillText(`Δ Joelho Esq: ${leftDelta.toFixed(3)}`, 30, 145);
+            }
+
+            // ======== LÓGICA: AGACHAMENTO ========
+          } else if (tipoExercicio === "agachamento") {
+            const quadril = lm[24];
+            const joelho = lm[26];
+            const tornozelo = lm[28];
+            const angulo = getAngle(quadril, joelho, tornozelo);
+
+            // Mostra o ângulo da perna
+            ctx.font = "bold 20px Arial";
+            ctx.strokeText(
+              `Ângulo agachamento: ${angulo.toFixed(1)}°`,
+              30,
+              110
+            );
+            ctx.fillText(`Ângulo agachamento: ${angulo.toFixed(1)}°`, 30, 110);
+
+            if (angulo < 70) texto = "Agachando";
+
+            // ======== LÓGICA: FLEXÃO DE BRAÇO ========
+          } else if (tipoExercicio === "flexao") {
+            const ombro = lm[12];
+            const cotovelo = lm[14];
+            const pulso = lm[16];
+            const angulo = getAngle(ombro, cotovelo, pulso);
+
+            ctx.strokeText(`Ângulo cotovelo: ${angulo.toFixed(1)}`, 30, 110);
+            ctx.fillText(`Ângulo cotovelo: ${angulo.toFixed(1)}`, 30, 110);
+
+            if (angulo < 90) texto = "Flexionando";
+
+            // ======== LÓGICA: ABDOMINAL ========
+          } else if (tipoExercicio === "abdominal") {
+            const quadril = lm[24];
+            const ombro = lm[12];
+            const cabeca = lm[8];
+            const angulo = getAngle(cabeca, ombro, quadril);
+
+            ctx.strokeText(`Ângulo tronco: ${angulo.toFixed(1)}`, 30, 110);
+            ctx.fillText(`Ângulo tronco: ${angulo.toFixed(1)}`, 30, 110);
+
+            if (angulo < 140) {
+              texto = "Abdominal";
+            }
+          }
+
+          // Exibe o nome do exercício no topo da tela
+          if (texto) {
+            ctx.font = "bold 50px Arial";
+            ctx.strokeStyle = "black";
+            ctx.lineWidth = 6;
+            ctx.strokeText(texto, 30, 60);
+            ctx.fillStyle = "orange";
+            ctx.fillText(texto, 30, 60);
+          }
+        }
+
+        ctx.restore();
+      });
+
+      // Função que processa continuamente o vídeo
+      function processarVideo() {
+        if (video.paused || video.ended) return;
+        pose.send({ image: video }).then(() => {
+          requestAnimationFrame(processarVideo);
+        });
+      }
+
+      // Inicia o processamento ao carregar o vídeo
+      video.onloadeddata = () => {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        video.play();
+        lastRightKneeY = null;
+        lastLeftKneeY = null;
+        isRunning = false;
+        processarVideo();
+      };
+
+      // Ao selecionar um exercício, carrega o vídeo correspondente
+      select.addEventListener("change", () => {
+        tipoExercicio = select.value;
+
+        if (!tipoExercicio) {
+          video.style.display = "none";
+          video.pause();
+          return;
+        }
+
+        let videoPath = "";
+        if (tipoExercicio === "corrida") {
+          videoPath = "corrida.mp4";
+        } else if (tipoExercicio === "agachamento") {
+          videoPath = "agachamento.mp4";
+        } else if (tipoExercicio === "flexao") {
+          videoPath = "flexao.mp4";
+        } else if (tipoExercicio === "abdominal") {
+          videoPath = "abdominal.mp4";
+        }
+
+        videoSource.src = videoPath;
+        video.load();
+        video.style.display = "block";
+      });
+    </script>
+  </body>
+</html>
